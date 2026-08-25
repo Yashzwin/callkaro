@@ -1,0 +1,12 @@
+{
+  "name": "home-call",
+  "version": "2.0.0",
+  "description": "Self-hosted WebRTC calling (own code) with FCM push for closed-app ringing",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "firebase-admin": "^12.7.0"
+  }
+}
