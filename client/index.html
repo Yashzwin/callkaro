@@ -80,10 +80,15 @@ const SIGNAL_HOST = (window.APP_CONFIG && window.APP_CONFIG.SIGNAL_HOST)
   ? window.APP_CONFIG.SIGNAL_HOST : location.hostname;
 const SIGNAL_PORT = (window.APP_CONFIG && window.APP_CONFIG.SIGNAL_PORT)
   ? window.APP_CONFIG.SIGNAL_PORT : location.port;
-const SIGNAL_WS = `ws://${SIGNAL_HOST}:${SIGNAL_PORT}`;
-const REGISTER_URL = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/register`;
-const PUSH_URL    = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/push`;
-const CREATE_URL  = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/create`;
+const IS_HTTPS = location.protocol === 'https:';
+const WS_SCHEME = IS_HTTPS ? 'wss' : 'ws';
+const HTTP_SCHEME = IS_HTTPS ? 'https' : 'http';
+// Build URL without forcing the default port (avoids :80/:443 clutter).
+const BASE = SIGNAL_PORT ? `${SIGNAL_HOST}:${SIGNAL_PORT}` : SIGNAL_HOST;
+const SIGNAL_WS   = `${WS_SCHEME}://${BASE}`;
+const REGISTER_URL = `${HTTP_SCHEME}://${BASE}/register`;
+const PUSH_URL     = `${HTTP_SCHEME}://${BASE}/push`;
+const CREATE_URL   = `${HTTP_SCHEME}://${BASE}/create`;
 
 let ws, pc, localStream, remoteAudio, myCode=null, fcmToken=null;
 let pendingCandidates=[];
