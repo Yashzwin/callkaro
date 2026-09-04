@@ -1,0 +1,14 @@
+# Render deploy config for Home Call signaling + push server.
+# Push to main on GitHub (Yashzwin/callkaro) triggers a deploy automatically.
+services:
+  - type: web
+    name: callkaro
+    runtime: node
+    rootDir: server          # package.json + server.js live in ./server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # Render sets PORT automatically; server.js reads process.env.PORT.
+      - key: NODE_VERSION
+        value: "20"
+    autoDeploy: true
