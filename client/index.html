@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0b132b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📞</text></svg>">
+<title>Home Call</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b132b;color:#e0e6f0;
+    font-family:system-ui,Arial,sans-serif;touch-action:manipulation}
+  .box{max-width:440px;margin:0 auto;padding:24px 18px;min-height:100%}
+  h1{font-size:22px;margin:6px 0 16px;text-align:center;font-weight:700}
+  .card{background:#1c2541;border-radius:14px;padding:18px;margin:12px 0}
+  .tab{display:flex;gap:8px;margin-bottom:12px}
+  .tab button{flex:1;background:#0f1830;color:#8ea0c9}
+  .tab button.active{background:#3a86ff;color:#fff}
+  input{width:100%;padding:13px;font-size:16px;border-radius:10px;border:0;
+    margin:6px 0;box-sizing:border-box;background:#0f1830;color:#fff}
+  button{width:100%;padding:15px;font-size:16px;border:0;border-radius:10px;
+    margin:8px 0;color:#fff;background:#3a86ff;font-weight:600}
+  button:disabled{opacity:.4}
+  .call{background:#2ec27e}.hang{background:#e63946}.ring{background:#ffb703}
+  #status{margin:10px 0;font-size:14px;color:#8ea0c9;text-align:center;min-height:18px}
+  #big{font-size:72px;text-align:center;margin:18px 0 6px}
+  .mycode{font-size:20px;text-align:center;color:#2ec27e;font-weight:700;margin:6px 0}
+  .hidden{display:none}
+  .hint{font-size:12px;color:#6f80a8;text-align:center;margin-top:14px;line-height:1.5}
+  .err{color:#ff6b6b;font-size:13px;text-align:center;min-height:16px;margin:4px 0}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>📞 Home Call</h1>
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <!-- STEP 1: create or use a code -->
+  <div id="setup" class="card">
+    <div class="tab">
+      <button id="tabCreate" class="active">Create code</button>
+      <button id="tabUse">Use code</button>
+    </div>
+    <div id="createPane">
+      <input id="newCode" placeholder="Pick a code (e.g. john123, dad#9)">
+      <button id="createBtn">Create</button>
+      <div class="err" id="createErr"></div>
+    </div>
+    <div id="usePane" class="hidden">
+      <input id="existCode" placeholder="Your existing code">
+      <button id="useBtn">Use</button>
+      <div class="err" id="useErr"></div>
+    </div>
+    <button id="enableBtn" class="hidden">Enable call notifications</button>
+  </div>
+
+  <!-- STEP 2: call someone by their code -->
+  <div id="callUI" class="hidden">
+    <div class="mycode" id="myCodeShown"></div>
+    <div id="big">📞</div>
+    <div id="status">Your code is ready. Enter a person's code to call.</div>
+    <input id="targetCode" placeholder="Person's code to call">
+    <button id="callBtn" class="call">Call</button>
+    <button id="hangBtn" class="hang hidden">Hang up</button>
+    <button id="answerBtn" class="ring hidden">Answer</button>
+  </div>
+
+  <div class="hint">
+    Share your code with the people you want to call.<br>
+    Add to Home Screen to install. Enable notifications so it rings when closed.
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="config.js"></script>
+<script>
+const SIGNAL_HOST = (window.APP_CONFIG && window.APP_CONFIG.SIGNAL_HOST)
+  ? window.APP_CONFIG.SIGNAL_HOST : location.hostname;
+const SIGNAL_PORT = (window.APP_CONFIG && window.APP_CONFIG.SIGNAL_PORT)
+  ? window.APP_CONFIG.SIGNAL_PORT : location.port;
+const SIGNAL_WS = `ws://${SIGNAL_HOST}:${SIGNAL_PORT}`;
+const REGISTER_URL = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/register`;
+const PUSH_URL    = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/push`;
+const CREATE_URL  = `http://${SIGNAL_HOST}:${SIGNAL_PORT}/create`;
+
+let ws, pc, localStream, remoteAudio, myCode=null, fcmToken=null;
+let pendingCandidates=[];
+
+const $ = id => document.getElementById(id);
+const status = t => $('status').textContent = t;
+remoteAudio = $('remoteAudio');
+
+const rtcCfg = {
+  iceServers: [
+    {urls:'stun:stun.l.google.com:19302'},
+    ...((window.APP_CONFIG && window.APP_CONFIG.turnServers) || [])
+  ]
+};
+
+function newPeer() {
+  const p = new RTCPeerConnection(rtcCfg);
+  p.onicecandidate = e => { if (e.candidate) ws.send(JSON.stringify({type:'ice', candidate:e.candidate})); };
+  p.ontrack = e => { remoteAudio.srcObject = e.streams[0]; remoteAudio.play().catch(()=>{}); };
+  return p;
+}
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  else { status('Connection lost — reload the page.'); throw new Error('ws not open'); }
+}
+async function startMedia() {
+  if (localStream) return;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+  } catch (e) {
+    status('Microphone permission denied or not available.');
+    throw e;
+  }
+}
+function resetUI() {
+  $('callBtn').classList.remove('hidden');
+  $('answerBtn').classList.add('hidden');
+  $('hangBtn').classList.add('hidden');
+  $('big').textContent = '📞';
+}
+function flushCandidates() {
+  while (pendingCandidates.length && pc && pc.remoteDescription) {
+    pc.addIceCandidate(pendingCandidates.shift()).catch(()=>{});
+  }
+}
+
+// ---- tabs ----
+$('tabCreate').onclick = () => {
+  $('tabCreate').classList.add('active'); $('tabUse').classList.remove('active');
+  $('createPane').classList.remove('hidden'); $('usePane').classList.add('hidden');
+};
+$('tabUse').onclick = () => {
+  $('tabUse').classList.add('active'); $('tabCreate').classList.remove('active');
+  $('usePane').classList.remove('hidden'); $('createPane').classList.add('hidden');
+};
+
+// ---- create a code ----
+$('createBtn').onclick = async () => {
+  const code = $('newCode').value.trim();
+  $('createErr').textContent = '';
+  const r = await fetch(CREATE_URL,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({code})}).then(x=>x.json());
+  if (!r.ok) { $('createErr').textContent = r.err || 'Could not create.'; return; }
+  login(r.code);
+};
+// ---- use existing code ----
+$('useBtn').onclick = async () => {
+  const code = $('existCode').value.trim();
+  $('useErr').textContent = '';
+  // verify it exists by logging in (server rejects unknown codes)
+  login(code);
+};
+
+function login(code) {
+  myCode = code.toLowerCase();
+  ws = new WebSocket(SIGNAL_WS);
+  ws.onopen = () => wsSend({type:'login', code:myCode});
+  ws.onerror = () => status('WebSocket error — reload page.');
+  ws.onclose = () => status('Disconnected. Reload to call again.');
+  ws.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    switch (m.type) {
+      case 'logged-in':
+        $('setup').classList.add('hidden');
+        $('callUI').classList.remove('hidden');
+        $('myCodeShown').textContent = 'Your code: ' + myCode;
+        status('Ready. Enter a person\'s code to call.');
+        if (fcmToken) fetch(REGISTER_URL,{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({code:myCode, token:fcmToken})}).catch(()=>{});
+        break;
+      case 'login-fail':
+        $('useErr').textContent = m.err; break;
+
+      case 'calling':
+        status('Calling ' + ($('targetCode').value.trim()) + '…');
+        break;
+      case 'incoming':
+        status('Incoming call — tap Answer.');
+        $('callBtn').classList.add('hidden'); $('answerBtn').classList.remove('hidden'); break;
+      case 'call-fail':
+        status(m.err); $('callBtn').classList.remove('hidden'); break;
+
+      case 'offer':
+        if (!pc) pc = newPeer();
+        await pc.setRemoteDescription(m.sdp); flushCandidates();
+        $('callBtn').classList.add('hidden'); $('answerBtn').classList.remove('hidden');
+        status('Incoming call — tap Answer.');
+        break;
+      case 'answer':
+        await pc.setRemoteDescription(m.sdp); flushCandidates(); break;
+      case 'ice': {
+        const c = m.candidate ? new RTCIceCandidate(m.candidate) : null;
+        if (c && pc && pc.remoteDescription) pc.addIceCandidate(c).catch(()=>{});
+        else if (c) pendingCandidates.push(c); break;
+      }
+      case 'hangup': teardownLocal(); status('Call ended by peer.'); break;
+      case 'peer-left': teardownLocal(); status('Peer left.'); break;
+    }
+  };
+}
+
+$('callBtn').onclick = async () => {
+  const target = $('targetCode').value.trim();
+  if (!target) { status('Type the person\'s code first.'); return; }
+  // Caller initiates the offer RIGHT AWAY so the callee has SDP to answer.
+  await startMedia();
+  pc = newPeer();
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  wsSend({type:'call', code:target.toLowerCase()}); // wake + relay target
+  wsSend({type:'offer', sdp:offer});                // send SDP offer
+  fetch(PUSH_URL,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({code:target.toLowerCase()})}).catch(()=>{});
+  $('callBtn').classList.add('hidden');
+  $('hangBtn').classList.remove('hidden');
+  status('Calling ' + target + '…');
+};
+
+$('answerBtn').onclick = async () => {
+  await startMedia();
+  if (!pc) pc = newPeer();
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  const ans = await pc.createAnswer();
+  await pc.setLocalDescription(ans);
+  wsSend({type:'answer', sdp:ans});
+  $('answerBtn').classList.add('hidden'); $('hangBtn').classList.remove('hidden');
+  $('big').textContent = '🟢'; status('In call.');
+};
+$('hangBtn').onclick = () => { wsSend({type:'hangup'}); teardownLocal(); status('Call ended.'); };
+function teardownLocal() {
+  try { pc && pc.close(); } catch(e){}
+  pc = null; pendingCandidates = [];
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  remoteAudio.srcObject = null; resetUI();
+}
+
+// ---- Firebase web push ----
+function initFirebase() {
+  if (!window.FIREBASE_CONFIG || window.FIREBASE_CONFIG.apiKey?.startsWith('PASTE')) return;
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  const messaging = firebase.messaging();
+  messaging.usePublicVapidKey(window.FIREBASE_VAPID);
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    messaging.useServiceWorker(reg);
+    messaging.requestPermission().then(() => messaging.getToken())
+      .then(token => { fcmToken = token; status('Notifications on.'); })
+      .catch(() => status('Notifications blocked — only rings when open.'));
+    messaging.onMessage(payload => {
+      if (payload.data && payload.data.type === 'call') {
+        $('callBtn').classList.add('hidden'); $('answerBtn').classList.remove('hidden');
+        status('Incoming call — tap Answer.');
+      }
+    });
+  }).catch(()=>{});
+}
+if (window.FIREBASE_CONFIG && !window.FIREBASE_CONFIG.apiKey?.startsWith('PASTE')) {
+  $('enableBtn').classList.remove('hidden');
+  $('enableBtn').onclick = () => initFirebase();
+  initFirebase();
+}
+</script>
+</body>
+</html>
