@@ -110,8 +110,30 @@ async function handlePush(body, res) {
     try {
       await admin.messaging().send({
         token: tok,
-        data: { type: 'call', code },
+        // For web push, we need notification payload + data payload
+        notification: {
+          title: '📞 Incoming Call',
+          body: code + ' is calling you',
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
+          vibrate: [300, 100, 300, 100, 300],
+          requireInteraction: true,
+          tag: 'incoming-call',
+        },
+        data: {
+          type: 'call',
+          code: code,
+          url: '/'
+        },
         android: { priority: 'high', directBootOk: true, ttl: 60 },
+        webpush: {
+          headers: {
+            Urgency: 'high',
+          },
+          fcmOptions: {
+            link: '/'
+          }
+        }
       });
       ok++;
     } catch (e) {}
