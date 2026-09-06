@@ -29,15 +29,31 @@ const PORT = process.env.PORT || 8080;
 let admin = null, fcmApp = null;
 try {
   admin = require('firebase-admin');
+  // 1) Try local file (dev)
   const cfgPath = path.join(__dirname, 'firebase-service-account.json');
-  if (fs.existsSync(cfgPath)) {
-    fcmApp = admin.initializeApp({ credential: admin.credential.cert(require(cfgPath)) });
+  // 2) Try env var (cloud) - base64 encoded service account JSON
+  const cfgB64 = process.env.FIREBASE_SERVICE_ACCOUNT_B64;
+  let cred = null;
+  if (cfgB64) {
+    try {
+      const json = Buffer.from(cfgB64, 'base64').toString('utf8');
+      cred = admin.credential.cert(JSON.parse(json));
+      console.log('FCM credentials loaded from FIREBASE_SERVICE_ACCOUNT_B64 env var.');
+    } catch (e) {
+      console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_B64:', e.message);
+    }
+  } else if (fs.existsSync(cfgPath)) {
+    cred = admin.credential.cert(require(cfgPath));
+    console.log('FCM credentials loaded from local firebase-service-account.json.');
+  }
+  if (cred) {
+    fcmApp = admin.initializeApp({ credential: cred });
     console.log('FCM enabled (push to closed apps works).');
   } else {
-    console.log('No firebase-service-account.json — push disabled; WS signaling still works.');
+    console.log('No FCM credentials — push disabled; WS signaling still works.');
   }
 } catch (e) {
-  console.log('firebase-admin not installed or no creds — push disabled.');
+  console.log('firebase-admin not installed or init failed — push disabled.');
 }
 
 // ---- codes: code -> { ws, fcmTokens:[], peers mapping implicit } ----
