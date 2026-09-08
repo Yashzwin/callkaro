@@ -1,5 +1,5 @@
 // CallKaro service worker — push notifications + offline cache.
-const CACHE = 'callkaro-v3';
+const CACHE = 'callkaro-v4';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './config.js',
                './firebase-config.js', './icon-192.png', './icon-512.png'];
 
@@ -58,9 +58,10 @@ self.addEventListener('push', function (event) {
   if (!isCall) return; // ignore unrelated pushes
 
   const from   = (d.from || d.code || '').toString();
+  const to     = (d.to || d.code || '').toString();
   const title  = '📞 Incoming Call';
   const body   = from ? (from + ' is calling you') : (msg.notification && msg.notification.body) || 'Someone is calling you';
-  const url    = (d.url || '/') + (from ? '#from=' + encodeURIComponent(from) : '');
+  const url    = d.url || '/';
 
   event.waitUntil(
     self.registration.showNotification(title, {
@@ -71,26 +72,48 @@ self.addEventListener('push', function (event) {
       renotify: true,
       requireInteraction: true,
       vibrate: [300, 100, 300, 100, 300],
-      data: { url: url, from: from }
+      actions: [
+        { action: 'answer',  title: 'Answer',  icon: './icon-answer.png' },
+        { action: 'decline', title: 'Decline', icon: './icon-decline.png' }
+      ],
+      data: { url: url, from: from, to: to }
     })
   );
 });
 
-// ---- Notification click: bring the app up (it auto-logs-in and the server
-// hands it the held call). If a tab is already open, focus it. ----
+// ---- Notification buttons ----
+// Answer: open/focus the app straight into the call (auto-picks up when the
+//         mic permission is already granted). Decline: tell the caller
+//         without even opening the app. ----
 self.addEventListener('notificationclick', function (event) {
+  const d = event.notification.data || {};
+  const from = d.from || '';
+  const origin = self.location.origin;
+
+  if (event.action === 'decline') {
+    event.notification.close();
+    event.waitUntil(fetch(origin + '/decline', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: from, to: d.to || '' })
+    }).catch(function () {}));
+    return;
+  }
+
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || './';
+  const wantAutoAnswer = event.action === 'answer';
+  const openUrl = origin + '/' + (wantAutoAnswer && from
+    ? '?answer=1&from=' + encodeURIComponent(from) : '');
 
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
       for (const client of clientList) {
-        if (client.url.indexOf(self.location.origin) === 0 && 'focus' in client) {
-          client.postMessage({ type: 'incoming-call', from: event.notification.data && event.notification.data.from });
+        if (client.url.indexOf(origin) === 0 && 'focus' in client) {
+          if (wantAutoAnswer) client.postMessage({ type: 'auto-answer', from: from });
           return client.focus();
         }
       }
-      return clients.openWindow(url);
+      return clients.openWindow(openUrl);
     })
   );
 });

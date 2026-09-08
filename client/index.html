@@ -225,6 +225,8 @@ let myCode = localStorage.getItem('callkaro_code') || null;
 let fcmToken = null, notifState = 'unknown';
 let pendingCandidates = [], peerName = '', dialAfterLogin = null;
 let wantConnected = false, connectAttempt = 0, loginContext = 'auto';
+// opened from a notification "Answer" tap -> pick up as soon as the call lands
+let autoAnswerWanted = new URLSearchParams(location.search).get('answer') === '1';
 let reconnectT = null, pingT = null, warmT = null, callTimerT = null, ringT = null, vibrateT = null, callStart = 0, muted = false;
 let state = 'boot';   // boot | setup | idle | dialing | incoming | incall
 
@@ -347,7 +349,7 @@ function handle(m) {
     }
     case 'hangup':
       if (state === 'incoming') { setState('idle'); teardownMedia(); status('Missed call from ' + (peerName || 'someone') + '.'); }
-      else if (state !== 'idle') { teardown(); status('Call ended.'); }
+      else if (state !== 'idle') { teardown(); status(m.reason === 'declined' ? 'They declined the call.' : 'Call ended.'); }
       break;
     case 'peer-left':
       if (state !== 'idle') { teardown(); status('Other side left.'); }
@@ -397,6 +399,10 @@ function onOffer(m) {
   prepareIncoming();
   if (!pc) pc = newPeer();
   pc.setRemoteDescription(m.sdp).then(flushCandidates).catch(() => {});
+  if (autoAnswerWanted) {
+    autoAnswerWanted = false;
+    setTimeout(() => doAnswer(true), 250);
+  }
 }
 function prepareIncoming() {
   $('inAvatar').textContent = initials(peerName);
@@ -436,21 +442,28 @@ $('callBtn').onclick = () => {
 };
 $('targetCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('callBtn').click(); });
 
-$('answerBtn').onclick = () => {
+async function doAnswer(auto) {
   stopRing();
-  startMedia().then(async () => {
-    if (!pc) pc = newPeer();
-    if (!(await waitRemote())) { teardown(); status('Call already ended.', true); return; }
-    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.createAnswer().then(a => pc.setLocalDescription(a)).then(() => {
-      const d = pc.localDescription;
-      wsSend({ type: 'answer', sdp: { type: d.type, sdp: d.sdp } });
-      setState('incall');
-      $('callAvatar').textContent = initials(peerName);
-      $('callWith').textContent = 'with ' + peerName;
-    }).catch(e => { teardown(); status('Could not answer: ' + e.message, true); });
-  }).catch(() => { teardown(); status('Microphone permission denied or not available.', true); });
-};
+  try {
+    await startMedia();
+  } catch (e) {
+    if (auto) { status('Tap Answer to allow the microphone.', true); return; }
+    teardown(); status('Microphone permission denied or not available.', true); return;
+  }
+  if (!pc) pc = newPeer();
+  if (!(await waitRemote())) { teardown(); status('Call already ended.', true); return; }
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  try {
+    const a = await pc.createAnswer();
+    await pc.setLocalDescription(a);
+    const d = pc.localDescription;
+    wsSend({ type: 'answer', sdp: { type: d.type, sdp: d.sdp } });
+    setState('incall');
+    $('callAvatar').textContent = initials(peerName);
+    $('callWith').textContent = 'with ' + peerName;
+  } catch (e) { teardown(); status('Could not answer: ' + e.message, true); }
+}
+$('answerBtn').onclick = () => doAnswer(false);
 $('declineBtn').onclick = () => {
   wsSend({ type: 'hangup' });
   setState('idle'); teardownMedia();
@@ -595,6 +608,17 @@ async function setupPush(interactive) {
   } catch (e) { setNotifUI('none'); }
 }
 $('enableBtn').onclick = () => setupPush(true);
+
+// "Answer" tapped on the notification while this window was already open
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.type === 'auto-answer') {
+      if (e.data.from && !peerName) peerName = e.data.from;
+      if (state === 'incoming' && pc && pc.remoteDescription) doAnswer(true);
+      else autoAnswerWanted = true;
+    }
+  });
+}
 
 // ---------------- boot ----------------
 if (myCode) {

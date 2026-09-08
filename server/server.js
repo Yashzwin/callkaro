@@ -146,7 +146,7 @@ async function pushToCode(code, fromCode) {
     try {
       await admin.messaging().send({
         token: tok,
-        data: { type: 'call', from: fromCode || '', code: code, url: '/' },
+        data: { type: 'call', from: fromCode || '', code: code, to: code, url: '/' },
         webpush: {
           headers: { Urgency: 'high' },
           fcmOptions: { link: '/' }
@@ -186,6 +186,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && url === '/create')   return handleCreate(body, res);
     if (req.method === 'POST' && url === '/register') return handleRegister(body, res);
     if (req.method === 'POST' && url === '/push')     return handleLegacyPush(body, res);
+    if (req.method === 'POST' && url === '/decline')  return handleDecline(body, res);
 
     let p = url === '/' ? '/index.html' : url;
     const fp = path.join(ROOT, p);
@@ -231,6 +232,20 @@ async function handleLegacyPush(body, res) {
   code = (code || '').toLowerCase();
   const pushed = await pushToCode(code, '');
   res.writeHead(200); res.end(JSON.stringify({ pushed }));
+}
+
+// Callee tapped "Decline" on the push notification (page never opened).
+// Tells the still-ringing caller their call was declined.
+async function handleDecline(body, res) {
+  let from = '', to = '';
+  try { ({ from, to } = JSON.parse(body)); } catch {}
+  from = (from || '').toLowerCase(); to = (to || '').toLowerCase();
+  const p = pending.get(from);
+  if (p && p.target === to) {
+    send(p.sock, { type: 'hangup', reason: 'declined' });
+    clearPending(from);
+  }
+  res.writeHead(200); res.end('ok');
 }
 
 // ---------------- signaling over WebSocket (same port as HTTP) ----------------
